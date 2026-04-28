@@ -84,25 +84,54 @@ class FeishuService {
       return null;
     }
 
-    final response = await _requestWithRetry(() async {
-      return http.post(
-        Uri.parse('$baseUrl/auth/v3/tenant_access_token/internal'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'app_id': _appId,
-          'app_secret': _appSecret,
-        }),
-      );
-    });
+    final result = await getTenantAccessTokenWithError();
+    return result?.$1;
+  }
 
-    if (response != null && response.statusCode == 200) {
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      if (data['code'] == 0) {
-        _tenantAccessToken = data['tenant_access_token'] as String;
-        return _tenantAccessToken;
-      }
+  /// 获取 Tenant Access Token（带详细错误信息）
+  /// 返回 (token, errorMsg)，null 表示网络完全不可达，token=null 表示 API 返回错误
+  Future<(String?, String?)?> getTenantAccessTokenWithError() async {
+    if (!isConfigured) {
+      return (null, 'App ID 或 App Secret 为空');
     }
-    return null;
+
+    try {
+      final response = await _requestWithRetry(() async {
+        return http.post(
+          Uri.parse('$baseUrl/auth/v3/tenant_access_token/internal'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'app_id': _appId,
+            'app_secret': _appSecret,
+          }),
+        );
+      });
+
+      if (response == null) {
+        // 网络错误（超时或无法连接）
+        return (null, '网络连接失败，请检查网络或服务器地址');
+      }
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final code = data['code'] as int?;
+
+      if (code == 0) {
+        _tenantAccessToken = data['tenant_access_token'] as String;
+        return (_tenantAccessToken, null);
+      }
+
+      // API 返回错误，解析错误信息
+      final msg = data['msg'] as String? ?? '未知错误';
+      if (code == 99991663 || code == 99991664) {
+        return (null, 'App ID 或 App Secret 错误');
+      }
+      if (code == 99991660) {
+        return (null, '应用权限不足');
+      }
+      return (null, msg);
+    } catch (e) {
+      return (null, '网络异常: $e');
+    }
   }
 
   /// 发送消息给用户

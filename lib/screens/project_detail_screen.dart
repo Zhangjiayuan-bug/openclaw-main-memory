@@ -20,12 +20,24 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   bool _isStartingWorkflow = false;
   bool _isGeneratingFolder = false;
 
+  // 真实聊天数据
+  List<ChatMessage> _chatMessages = [];
+  bool _isLoadingChat = false;
+
+  // 真实文件数据
+  List<FileNode> _fileNodes = [];
+  bool _isLoadingFiles = false;
+
+  // 展开的文件夹路径集合
+  final Set<String> _expandedPaths = {};
+
   @override
   void initState() {
     super.initState();
-    // 页面加载时获取真实 Agent 状态
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _fetchAgentStatus();
+      _loadChatMessages();
+      _loadProjectFiles();
     });
   }
 
@@ -34,10 +46,46 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     await provider.fetchAgentStatus();
   }
 
+  Future<void> _loadChatMessages() async {
+    if (!mounted) return;
+    setState(() => _isLoadingChat = true);
+    try {
+      final provider = context.read<ProjectProvider>();
+      final messages = await provider.getChatMessages(widget.project.id);
+      if (mounted) {
+        setState(() {
+          _chatMessages = messages;
+          _isLoadingChat = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingChat = false);
+      }
+    }
+  }
+
+  Future<void> _loadProjectFiles() async {
+    if (!mounted) return;
+    setState(() => _isLoadingFiles = true);
+    try {
+      final provider = context.read<ProjectProvider>();
+      final files = await provider.scanProjectFiles(widget.project.id);
+      if (mounted) {
+        setState(() {
+          _fileNodes = files;
+          _isLoadingFiles = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingFiles = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    // 直接使用传入的 project，避免 provider 数据未加载导致的过期数据问题
-    // 如果需要刷新，应该在打开此页面之前更新 provider
     final currentProject = widget.project;
 
     return Scaffold(
@@ -55,7 +103,9 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh, color: TechTheme.silverGray),
-            onPressed: () => _refreshProject(context),
+            onPressed: () {
+              _refreshProject(context);
+            },
           ),
           IconButton(
             icon: const Icon(Icons.settings, color: TechTheme.silverGray),
@@ -65,10 +115,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
       ),
       body: Consumer<ProjectProvider>(
         builder: (context, provider, _) {
-          // 尝试从 provider 获取最新数据，如果 provider 中没有则使用传入的数据
           final latestProject = _getLatestProject(provider, currentProject);
-
-          // 使用从 OpenClaw Gateway 获取的真实 Agent 状态
           final agentStatus = provider.agentOnlineStatus;
 
           return SingleChildScrollView(
@@ -78,16 +125,12 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
               children: [
                 StatusPanel(
                   project: latestProject,
-                  agentOnlineStatus: agentStatus.isNotEmpty
-                      ? agentStatus
-                      : null, // 等待真实数据，避免显示假状态
+                  agentOnlineStatus: agentStatus.isNotEmpty ? agentStatus : null,
                   onStartWorkflow: _isStartingWorkflow
                       ? null
                       : () => _handleStartWorkflow(context, provider, latestProject),
                   onPauseWorkflow: () => _handleStopWorkflow(context, provider, latestProject),
-                  onShowDetails: () {
-                    _showProjectDetails(context, latestProject);
-                  },
+                  onShowDetails: () => _showProjectDetails(context, latestProject),
                 ),
                 const SizedBox(height: 16),
                 _buildChatSection(context, provider, latestProject),
@@ -101,18 +144,10 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     );
   }
 
-  /// 从 provider 获取最新项目数据，如果 provider 未加载则使用传入的数据
   Project _getLatestProject(ProjectProvider provider, Project fallback) {
-    if (provider.projects.isEmpty) {
-      return fallback;
-    }
-
+    if (provider.projects.isEmpty) return fallback;
     final latestFromProvider = provider.projects.where((p) => p.id == fallback.id).firstOrNull;
-    if (latestFromProvider == null) {
-      return fallback;
-    }
-
-    // 比较更新时间，使用最新的
+    if (latestFromProvider == null) return fallback;
     return latestFromProvider.updatedAt.isAfter(fallback.updatedAt)
         ? latestFromProvider
         : fallback;
@@ -122,6 +157,8 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     final provider = context.read<ProjectProvider>();
     await provider.loadProjects();
     await provider.fetchAgentStatus();
+    _loadChatMessages();
+    _loadProjectFiles();
   }
 
   Future<void> _handleStartWorkflow(
@@ -135,27 +172,37 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
       if (mounted) {
         if (success) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('🚀 启动成功'),
-              backgroundColor: TechTheme.matrixGreen,
-              duration: Duration(seconds: 2),
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.check_circle, color: TechTheme.matrixGreen, size: 20),
+                  const SizedBox(width: 8),
+                  Text('🚀 ${project.name} 已启动'),
+                ],
+              ),
+              backgroundColor: TechTheme.darkNightBlue,
+              duration: const Duration(seconds: 3),
             ),
           );
         } else {
-          // error 已经在 provider 中设置
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(provider.error ?? '启动失败'),
-              backgroundColor: TechTheme.warningRed,
+              content: Row(
+                children: [
+                  const Icon(Icons.error_outline, color: TechTheme.warningRed, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(provider.error ?? '启动失败')),
+                ],
+              ),
+              backgroundColor: TechTheme.darkNightBlue,
+              duration: const Duration(seconds: 3),
             ),
           );
           provider.clearError();
         }
       }
     } finally {
-      if (mounted) {
-        setState(() => _isStartingWorkflow = false);
-      }
+      if (mounted) setState(() => _isStartingWorkflow = false);
     }
   }
 
@@ -169,17 +216,30 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
       if (mounted) {
         if (success) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('⏹ 已停止'),
-              backgroundColor: TechTheme.matrixGreen,
-              duration: Duration(seconds: 2),
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.check_circle, color: TechTheme.matrixGreen, size: 20),
+                  const SizedBox(width: 8),
+                  Text('⏹ ${project.name} 已停止'),
+                ],
+              ),
+              backgroundColor: TechTheme.darkNightBlue,
+              duration: const Duration(seconds: 3),
             ),
           );
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(provider.error ?? '停止失败'),
-              backgroundColor: TechTheme.warningRed,
+              content: Row(
+                children: [
+                  const Icon(Icons.error_outline, color: TechTheme.warningRed, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(provider.error ?? '停止失败')),
+                ],
+              ),
+              backgroundColor: TechTheme.darkNightBlue,
+              duration: const Duration(seconds: 3),
             ),
           );
           provider.clearError();
@@ -189,15 +249,21 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('停止失败: $e'),
-            backgroundColor: TechTheme.warningRed,
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline, color: TechTheme.warningRed, size: 20),
+                const SizedBox(width: 8),
+                Expanded(child: Text('停止失败: $e')),
+              ],
+            ),
+            backgroundColor: TechTheme.darkNightBlue,
+            duration: const Duration(seconds: 3),
           ),
         );
       }
     }
   }
 
-  /// 处理生成文件夹
   Future<void> _handleGenerateFolder(
     BuildContext context,
     ProjectProvider provider,
@@ -210,16 +276,31 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
         if (folderPath != null) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('📁 文件夹已生成: $folderPath'),
-              backgroundColor: TechTheme.matrixGreen,
-              duration: const Duration(seconds: 3),
+              content: Row(
+                children: [
+                  const Icon(Icons.folder_open, color: TechTheme.matrixGreen, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text('📁 文件夹已生成: $folderPath')),
+                ],
+              ),
+              backgroundColor: TechTheme.darkNightBlue,
+              duration: const Duration(seconds: 4),
             ),
           );
+          // 刷新文件列表
+          _loadProjectFiles();
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(provider.error ?? '生成文件夹失败'),
-              backgroundColor: TechTheme.warningRed,
+              content: Row(
+                children: [
+                  const Icon(Icons.error_outline, color: TechTheme.warningRed, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(provider.error ?? '生成文件夹失败')),
+                ],
+              ),
+              backgroundColor: TechTheme.darkNightBlue,
+              duration: const Duration(seconds: 3),
             ),
           );
           provider.clearError();
@@ -229,15 +310,20 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('生成文件夹失败: $e'),
-            backgroundColor: TechTheme.warningRed,
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline, color: TechTheme.warningRed, size: 20),
+                const SizedBox(width: 8),
+                Expanded(child: Text('生成文件夹失败: $e')),
+              ],
+            ),
+            backgroundColor: TechTheme.darkNightBlue,
+            duration: const Duration(seconds: 3),
           ),
         );
       }
     } finally {
-      if (mounted) {
-        setState(() => _isGeneratingFolder = false);
-      }
+      if (mounted) setState(() => _isGeneratingFolder = false);
     }
   }
 
@@ -258,67 +344,106 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
               const SizedBox(width: 8),
               const Text(
                 '对话区',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
               ),
               const Spacer(),
-              TechIconButton(
-                icon: Icons.refresh,
-                size: 18,
-                onPressed: () {
-                  // TODO: 刷新聊天
-                },
-              ),
+              if (_isLoadingChat)
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: TechTheme.electricCyan),
+                )
+              else
+                TechIconButton(
+                  icon: Icons.refresh,
+                  size: 18,
+                  onPressed: _loadChatMessages,
+                ),
             ],
           ),
           const SizedBox(height: 12),
           const Divider(color: TechTheme.starGrayBlue, height: 1),
           const SizedBox(height: 12),
-          _buildChatMessage('🎭', 'conductor', '开始接收任务...', false),
-          _buildChatMessage('🎨', 'code-designer', '收到设计任务，准备开始工作', false),
-          _buildChatMessage('💻', 'code-writer', '等待中...', true),
+          if (_isLoadingChat)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('加载中...', style: TextStyle(color: TechTheme.silverGray)),
+              ),
+            )
+          else if (_chatMessages.isEmpty)
+            _buildEmptyChat(project)
+          else
+            ..._chatMessages.map((msg) => _buildChatMessage(msg)),
         ],
       ),
     );
   }
 
-  Widget _buildChatMessage(String emoji, String agent, String message, bool isWaiting) {
+  Widget _buildEmptyChat(Project project) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: TechTheme.deepSpaceBlue,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          const Text(
+            '💬 暂无对话记录',
+            style: TextStyle(color: TechTheme.silverGray, fontSize: 14),
+          ),
+          const SizedBox(height: 8),
+          if (project.status == ProjectStatus.inProgress)
+            const Text(
+              '工作流进行中，对话记录将实时更新',
+              style: TextStyle(color: TechTheme.starGrayBlue, fontSize: 12),
+            )
+          else
+            Text(
+              '启动工作流后开始记录',
+              style: TextStyle(color: TechTheme.starGrayBlue, fontSize: 12),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChatMessage(ChatMessage msg) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(emoji, style: const TextStyle(fontSize: 20)),
+          Text(msg.emoji, style: const TextStyle(fontSize: 20)),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  agent,
-                  style: const TextStyle(
-                    color: TechTheme.silverGray,
-                    fontSize: 12,
-                  ),
+                Row(
+                  children: [
+                    Text(
+                      msg.role,
+                      style: const TextStyle(color: TechTheme.silverGray, fontSize: 12),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _formatTime(msg.timestamp),
+                      style: const TextStyle(color: TechTheme.starGrayBlue, fontSize: 10),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 2),
                 Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: isWaiting
-                        ? TechTheme.starGrayBlue.withOpacity(0.3)
-                        : TechTheme.deepSpaceBlue,
+                    color: TechTheme.deepSpaceBlue,
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    message,
-                    style: TextStyle(
-                      color: isWaiting ? TechTheme.starGrayBlue : Colors.white,
-                      fontSize: 14,
-                    ),
+                    msg.content,
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
                   ),
                 ),
               ],
@@ -346,20 +471,28 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
               const SizedBox(width: 8),
               const Text(
                 '文件',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
               ),
               const Spacer(),
+              if (_isLoadingFiles)
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: TechTheme.electricCyan),
+                )
+              else
+                TechIconButton(
+                  icon: Icons.refresh,
+                  size: 18,
+                  onPressed: _loadProjectFiles,
+                ),
+              const SizedBox(width: 4),
               _buildFileCountBadge(project),
             ],
           ),
           const SizedBox(height: 12),
-          _buildFileTree(provider, project),
+          _buildFileTreeView(),
           const SizedBox(height: 16),
-          // 生成文件夹按钮
           SizedBox(
             width: double.infinity,
             child: TechButton(
@@ -384,19 +517,13 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
       ),
       child: Text(
         '${project.progress}%',
-        style: const TextStyle(
-          color: TechTheme.electricCyan,
-          fontSize: 12,
-        ),
+        style: const TextStyle(color: TechTheme.electricCyan, fontSize: 12),
       ),
     );
   }
 
-  Widget _buildFileTree(ProjectProvider provider, Project project) {
-    // 根据项目当前阶段和进度显示文件
-    final files = _getProjectFiles(project);
-
-    if (files.isEmpty) {
+  Widget _buildFileTreeView() {
+    if (_isLoadingFiles) {
       return Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
@@ -404,90 +531,141 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
           borderRadius: BorderRadius.circular(8),
         ),
         child: const Center(
-          child: Text(
-            '暂无文件，请先生成文件夹',
-            style: TextStyle(
-              color: TechTheme.silverGray,
-              fontSize: 14,
-            ),
+          child: Text('扫描文件中...', style: TextStyle(color: TechTheme.silverGray, fontSize: 14)),
+        ),
+      );
+    }
+
+    if (_fileNodes.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: TechTheme.deepSpaceBlue,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Center(
+          child: Column(
+            children: [
+              Text('📂 暂无文件', style: TextStyle(color: TechTheme.silverGray, fontSize: 14)),
+              SizedBox(height: 4),
+              Text('点击"生成文件夹"创建项目结构', style: TextStyle(color: TechTheme.starGrayBlue, fontSize: 12)),
+            ],
           ),
         ),
       );
     }
 
-    return Column(
-      children: files.map((file) => _buildFileItem(
-        file['emoji']!,
-        file['name']!,
-        file['progress']!,
-        _getColorFromProgress(file['progress']!),
-      )).toList(),
-    );
-  }
-
-  /// 根据项目阶段获取文件列表
-  List<Map<String, String>> _getProjectFiles(Project project) {
-    final files = <Map<String, String>>[];
-
-    // 设计阶段文件
-    if (project.currentStep.index >= WorkflowStep.design.index) {
-      files.add({'emoji': '📄', 'name': 'design_spec.md', 'progress': '100%'});
-    }
-
-    // 编码阶段文件
-    if (project.currentStep.index >= WorkflowStep.code.index) {
-      files.add({'emoji': '📄', 'name': 'main.dart', 'progress': '${project.progress}%'});
-    }
-
-    // 审核阶段文件
-    if (project.currentStep.index >= WorkflowStep.review.index) {
-      files.add({'emoji': '📄', 'name': 'review_report.md', 'progress': '100%'});
-    }
-
-    return files;
-  }
-
-  Color _getColorFromProgress(String progress) {
-    final value = int.tryParse(progress.replaceAll('%', '')) ?? 0;
-    if (value >= 100) return TechTheme.matrixGreen;
-    if (value >= 50) return TechTheme.electricCyan;
-    return TechTheme.energyYellow;
-  }
-
-  Widget _buildFileItem(String emoji, String name, String progress, Color color) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        children: [
-          Text(emoji, style: const TextStyle(fontSize: 16)),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              name,
-              style: const TextStyle(
-                color: TechTheme.silverGray,
-                fontSize: 14,
-              ),
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.2),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              progress,
-              style: TextStyle(
-                color: color,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
+    return Container(
+      decoration: BoxDecoration(
+        color: TechTheme.deepSpaceBlue,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: _fileNodes.map((node) => _buildFileNodeRow(node, 0)).toList(),
       ),
     );
+  }
+
+  Widget _buildFileNodeRow(FileNode node, int depth) {
+    final isExpanded = _expandedPaths.contains(node.path);
+    final isRoot = node.path.split(RegExp(r'[/\\]')).length <= 3;
+
+    return Column(
+      children: [
+        GestureDetector(
+          onTap: node.isDirectory
+              ? () {
+                  setState(() {
+                    if (isExpanded) {
+                      _expandedPaths.remove(node.path);
+                    } else {
+                      _expandedPaths.add(node.path);
+                    }
+                  });
+                }
+              : null,
+          child: Container(
+            padding: EdgeInsets.only(left: 8.0 + depth * 16, right: 8, top: 6, bottom: 6),
+            child: Row(
+              children: [
+                if (node.isDirectory)
+                  Icon(
+                    isExpanded ? Icons.expand_more : Icons.chevron_right,
+                    color: TechTheme.silverGray,
+                    size: 18,
+                  )
+                else
+                  const SizedBox(width: 18),
+                const SizedBox(width: 4),
+                Text(
+                  node.isDirectory ? '📁' : _getFileEmoji(node.name),
+                  style: const TextStyle(fontSize: 14),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    node.name,
+                    style: TextStyle(
+                      color: isRoot ? Colors.white : TechTheme.silverGray,
+                      fontSize: isRoot ? 14 : 13,
+                      fontWeight: isRoot ? FontWeight.w500 : FontWeight.normal,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (node.isDirectory && node.children.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: TechTheme.starGrayBlue.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '${node.children.length}',
+                      style: const TextStyle(color: TechTheme.silverGray, fontSize: 10),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        // 子节点（递归展开）
+        if (node.isDirectory && isExpanded)
+          ...node.children.map((child) => _buildFileNodeRow(child, depth + 1)),
+        const Divider(color: TechTheme.starGrayBlue, height: 1, indent: 8),
+      ],
+    );
+  }
+
+  String _getFileEmoji(String filename) {
+    final ext = filename.contains('.') ? filename.split('.').last.toLowerCase() : '';
+    switch (ext) {
+      case 'dart':
+        return '🔵';
+      case 'md':
+        return '📝';
+      case 'json':
+        return '📋';
+      case 'yaml':
+      case 'yml':
+        return '⚙️';
+      case 'txt':
+        return '📄';
+      case 'png':
+      case 'jpg':
+      case 'jpeg':
+      case 'gif':
+      case 'svg':
+        return '🖼️';
+      case 'pdf':
+        return '📕';
+      case 'zip':
+      case 'tar':
+      case 'gz':
+        return '📦';
+      default:
+        return '📄';
+    }
   }
 
   void _showProjectDetails(BuildContext context, Project project) {
@@ -505,11 +683,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
           children: [
             const Text(
               '项目详情',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 16),
             _buildDetailRow('项目名称', project.name),
@@ -523,10 +697,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
             const SizedBox(height: 24),
             SizedBox(
               width: double.infinity,
-              child: TechButton(
-                label: '关闭',
-                onPressed: () => Navigator.pop(context),
-              ),
+              child: TechButton(label: '关闭', onPressed: () => Navigator.pop(context)),
             ),
           ],
         ),
@@ -542,22 +713,10 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
         children: [
           SizedBox(
             width: 80,
-            child: Text(
-              label,
-              style: const TextStyle(
-                color: TechTheme.silverGray,
-                fontSize: 14,
-              ),
-            ),
+            child: Text(label, style: const TextStyle(color: TechTheme.silverGray, fontSize: 14)),
           ),
           Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-              ),
-            ),
+            child: Text(value, style: const TextStyle(color: Colors.white, fontSize: 14)),
           ),
         ],
       ),
@@ -565,7 +724,12 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   }
 
   String _formatDateTime(DateTime dt) {
-    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+
+  String _formatTime(DateTime dt) {
+    return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
   }
 
   void _showProjectSettings(BuildContext context) {
@@ -583,18 +747,12 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
             ListTile(
               leading: const Icon(Icons.edit, color: TechTheme.electricCyan),
               title: const Text('编辑项目', style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(context);
-                // TODO: 编辑项目
-              },
+              onTap: () => Navigator.pop(context),
             ),
             ListTile(
               leading: const Icon(Icons.delete, color: TechTheme.warningRed),
               title: const Text('删除项目', style: TextStyle(color: TechTheme.warningRed)),
-              onTap: () {
-                Navigator.pop(context);
-                // TODO: 删除项目
-              },
+              onTap: () => Navigator.pop(context),
             ),
             ListTile(
               leading: const Icon(Icons.close, color: TechTheme.silverGray),

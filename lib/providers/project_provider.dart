@@ -1,9 +1,82 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import 'package:workflow_app/models/project.dart';
 import 'package:workflow_app/services/storage_service.dart';
 import 'package:workflow_app/services/openclaw_service.dart';
 import 'package:workflow_app/services/feishu_service.dart';
+
+/// 聊天消息模型
+class ChatMessage {
+  final DateTime timestamp;
+  final String role; // conductor, code-designer, code-writer, code-reviewer
+  final String content;
+  final String emoji;
+
+  ChatMessage({
+    required this.timestamp,
+    required this.role,
+    required this.content,
+    required this.emoji,
+  });
+
+  factory ChatMessage.fromEntry(String entry) {
+    // 格式: [2026-04-28T12:00:00.000] conductor: message
+    final match = RegExp(r'\[(.*?)\] (\w+): (.*)').firstMatch(entry);
+    if (match != null) {
+      return ChatMessage(
+        timestamp: DateTime.parse(match.group(1)!),
+        role: match.group(2)!,
+        content: match.group(3)!,
+        emoji: _roleEmoji(match.group(2)!),
+      );
+    }
+    // 兼容无时间戳格式
+    return ChatMessage(
+      timestamp: DateTime.now(),
+      role: 'unknown',
+      content: entry,
+      emoji: '💬',
+    );
+  }
+
+  static String _roleEmoji(String role) {
+    switch (role.toLowerCase()) {
+      case 'conductor':
+        return '🎭';
+      case 'code-designer':
+      case 'design':
+        return '🎨';
+      case 'code-writer':
+      case 'code':
+        return '💻';
+      case 'code-reviewer':
+      case 'review':
+        return '🔍';
+      case 'sakura':
+        return '🌸';
+      default:
+        return '💬';
+    }
+  }
+}
+
+/// 文件树节点
+class FileNode {
+  final String name;
+  final String path;
+  final bool isDirectory;
+  final List<FileNode> children;
+
+  FileNode({
+    required this.name,
+    required this.path,
+    required this.isDirectory,
+    this.children = const [],
+  });
+}
 
 /// 项目 Provider
 /// 负责应用状态管理
@@ -459,13 +532,19 @@ class ProjectProvider extends ChangeNotifier {
     // 先配置
     _feishu.configure(appId: appId, appSecret: appSecret);
 
-    // 验证：尝试获取 token
-    final token = await _feishu.getTenantAccessToken();
-    if (token == null) {
-      // 验证失败，清除配置
+    // 验证：尝试获取 token，捕获详细错误
+    final result = await _feishu.getTenantAccessTokenWithError();
+    if (result == null) {
       _feishu.configure(appId: '', appSecret: '');
       notifyListeners();
-      return '飞书配置验证失败：请检查 App ID 和 App Secret 是否正确';
+      return '飞书配置验证失败：无法连接到飞书服务器，请检查网络';
+    }
+
+    final (token, errorMsg) = result;
+    if (token == null) {
+      _feishu.configure(appId: '', appSecret: '');
+      notifyListeners();
+      return '飞书配置验证失败：${errorMsg ?? "App ID 或 App Secret 错误"}';
     }
 
     notifyListeners();
@@ -480,15 +559,20 @@ class ProjectProvider extends ChangeNotifier {
     tempService.configure(appId: appId, appSecret: appSecret);
 
     // 验证：尝试获取 token
-    final token = await tempService.getTenantAccessToken();
+    final result = await tempService.getTenantAccessTokenWithError();
+    if (result == null) {
+      return '验证失败：无法连接到飞书服务器，请检查网络';
+    }
+
+    final (token, errorMsg) = result;
     if (token == null) {
-      return '验证失败：请检查 App ID 和 App Secret 是否正确';
+      return '飞书配置错误：${errorMsg ?? "App ID 或 App Secret 错误"}';
     }
 
     return null;
   }
 
-  /// 生成项目文件夹
+  /// 生成项目文件夹（真正创建）
   /// 返回生成的文件夹路径，失败返回 null
   Future<String?> generateProjectFolder(String projectId) async {
     try {
@@ -510,6 +594,72 @@ class ProjectProvider extends ChangeNotifier {
   /// 获取项目文件夹路径
   Future<String?> getProjectFolderPath(String projectId) async {
     return await _storage.getProjectFolderPath(projectId);
+  }
+
+  /// 获取项目聊天记录
+  Future<List<ChatMessage>> getChatMessages(String projectId) async {
+    final record = await _storage.loadChatRecord(projectId);
+    if (record == null || record.isEmpty) {
+      return [];
+    }
+
+    final lines = record.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    return lines.map((line) => ChatMessage.fromEntry(line)).toList();
+  }
+
+  /// 扫描项目文件夹，返回文件树
+  Future<List<FileNode>> scanProjectFiles(String projectId) async {
+    final folderPath = await _storage.getProjectFolderPath(projectId);
+    if (folderPath == null) {
+      return [];
+    }
+
+    final dir = Directory(folderPath);
+    if (!await dir.exists()) {
+      return [];
+    }
+
+    return _scanDirectory(dir, 0);
+  }
+
+  List<FileNode> _scanDirectory(Directory dir, int depth) {
+    final nodes = <FileNode>[];
+
+    try {
+      final entities = dir.listSync(); // 使用 sync 因为我们在 isolate 外
+      for (final entity in entities) {
+        final name = entity.path.split(Platform.pathSeparator).last;
+        // 跳过隐藏文件和 project.json
+        if (name.startsWith('.')) continue;
+
+        if (entity is Directory) {
+          final children = _scanDirectory(entity, depth + 1);
+          nodes.add(FileNode(
+            name: name,
+            path: entity.path,
+            isDirectory: true,
+            children: children,
+          ));
+        } else if (entity is File) {
+          nodes.add(FileNode(
+            name: name,
+            path: entity.path,
+            isDirectory: false,
+          ));
+        }
+      }
+    } catch (e) {
+      debugPrint('[ProjectProvider] scanProjectFiles error: $e');
+    }
+
+    // 按文件夹优先、然后字母排序
+    nodes.sort((a, b) {
+      if (a.isDirectory && !b.isDirectory) return -1;
+      if (!a.isDirectory && b.isDirectory) return 1;
+      return a.name.compareTo(b.name);
+    });
+
+    return nodes;
   }
 
   /// 清除错误
