@@ -19,6 +19,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _feishuAppIdController = TextEditingController();
   final _feishuAppSecretController = TextEditingController();
   bool _showToken = false;
+  bool _isValidatingFeishu = false;
 
   // 飞书 Agent 配置（从 Secrets 配置获取）
   Map<String, Map<String, String>> get _feishuAgents => Secrets.feishuAgents;
@@ -162,16 +163,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         SizedBox(
                           width: 100,
                           child: TechButton(
-                            label: '保存',
-                            onPressed: () {
-                              provider.configureFeishu(
-                                appId: _feishuAppIdController.text,
-                                appSecret: _feishuAppSecretController.text,
-                              );
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('飞书配置已保存')),
-                              );
-                            },
+                            label: _isValidatingFeishu ? '验证中...' : '保存',
+                            onPressed: _isValidatingFeishu
+                                ? null
+                                : () => _handleFeishuSave(provider),
                           ),
                         ),
                       ],
@@ -202,6 +197,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
         },
       ),
     );
+  }
+
+  /// 处理飞书配置保存
+  Future<void> _handleFeishuSave(ProjectProvider provider) async {
+    final appId = _feishuAppIdController.text.trim();
+    final appSecret = _feishuAppSecretController.text.trim();
+
+    if (appId.isEmpty || appSecret.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请填写 App ID 和 App Secret'),
+          backgroundColor: TechTheme.warningRed,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isValidatingFeishu = true);
+
+    try {
+      // 调用配置方法，该方法会验证凭证
+      final error = await provider.configureFeishu(
+        appId: appId,
+        appSecret: appSecret,
+      );
+
+      if (error != null) {
+        // 验证失败
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(error),
+              backgroundColor: TechTheme.warningRed,
+            ),
+          );
+        }
+      } else {
+        // 验证成功
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('飞书配置已保存并验证通过'),
+              backgroundColor: TechTheme.matrixGreen,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('保存失败: $e'),
+            backgroundColor: TechTheme.warningRed,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isValidatingFeishu = false);
+      }
+    }
   }
 
   Widget _buildAgentSelector() {
@@ -327,16 +383,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildConnectionStatus(String label, String value, bool isConnected) {
+  Widget _buildConnectionStatus(String label, String value, bool isConnection) {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: isConnected
+        color: isConnection
             ? TechTheme.matrixGreen.withOpacity(0.1)
             : TechTheme.warningRed.withOpacity(0.1),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-          color: isConnected ? TechTheme.matrixGreen : TechTheme.warningRed,
+          color: isConnection ? TechTheme.matrixGreen : TechTheme.warningRed,
         ),
       ),
       child: Column(
@@ -356,7 +412,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 width: 8,
                 height: 8,
                 decoration: BoxDecoration(
-                  color: isConnected ? TechTheme.matrixGreen : TechTheme.warningRed,
+                  color: isConnection ? TechTheme.matrixGreen : TechTheme.warningRed,
                   shape: BoxShape.circle,
                 ),
               ),
@@ -365,7 +421,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: Text(
                   value,
                   style: TextStyle(
-                    color: isConnected ? TechTheme.matrixGreen : TechTheme.warningRed,
+                    color: isConnection ? TechTheme.matrixGreen : TechTheme.warningRed,
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
                   ),

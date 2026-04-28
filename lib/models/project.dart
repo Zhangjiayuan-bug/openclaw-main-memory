@@ -110,4 +110,16 @@ class Project {
         return '🔍';
     }
   }
+
+  /// 根据当前阶段返回对应的文件名
+  String get currentStepFileName {
+    switch (currentStep) {
+      case WorkflowStep.design:
+        return 'design_spec.md';
+      case WorkflowStep.code:
+        return 'main.dart';
+      case WorkflowStep.review:
+        return 'review_report.md';
+    }
+  }
 }

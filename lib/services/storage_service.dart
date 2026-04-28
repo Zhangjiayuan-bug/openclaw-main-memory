@@ -26,6 +26,55 @@ class StorageService {
   /// 获取项目文件夹路径
   String get _projectsPath => '$_basePath/$_projectsFolder';
 
+  /// 获取项目文件夹路径
+  Future<String?> getProjectFolderPath(String projectId) async {
+    if (_basePath == null) return null;
+    return '$_projectsPath/$projectId';
+  }
+
+  /// 生成/重新生成项目文件夹结构
+  /// 返回生成的文件夹路径
+  Future<String> generateProjectFolder(String projectId) async {
+    if (_basePath == null) {
+      throw Exception('存储服务未初始化');
+    }
+
+    final projectPath = '$_projectsPath/$projectId';
+
+    // 验证路径是否合法
+    if (!_isValidPath(projectPath)) {
+      throw Exception('无效的路径: $projectPath');
+    }
+
+    // 创建项目根文件夹
+    await Directory(projectPath).create(recursive: true);
+    // 创建子文件夹
+    await Directory('$projectPath/code').create(recursive: true);
+    await Directory('$projectPath/review').create(recursive: true);
+    await Directory('$projectPath/chat').create(recursive: true);
+    await Directory('$projectPath/design').create(recursive: true);
+
+    return projectPath;
+  }
+
+  /// 验证路径是否合法
+  bool _isValidPath(String path) {
+    if (path.isEmpty) return false;
+
+    // 检查是否包含非法字符
+    final invalidChars = RegExp(r'[<>"|?*\x00-\x1f]');
+    if (invalidChars.hasMatch(path)) {
+      return false;
+    }
+
+    // 检查路径长度是否合理
+    if (path.length > 260) {
+      return false;
+    }
+
+    return true;
+  }
+
   /// 创建项目
   Future<Project> createProject(Project project) async {
     final projectPath = '$_projectsPath/${project.id}';
@@ -33,6 +82,7 @@ class StorageService {
     await Directory('$projectPath/code').create(recursive: true);
     await Directory('$projectPath/review').create(recursive: true);
     await Directory('$projectPath/chat').create(recursive: true);
+    await Directory('$projectPath/design').create(recursive: true);
 
     await saveProject(project);
     return project;

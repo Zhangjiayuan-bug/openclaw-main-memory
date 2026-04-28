@@ -3,8 +3,8 @@
 
 class Secrets {
   // OpenClaw Gateway
-  static const String defaultGatewayUrl = 'ws://192.168.x.x:18789';
-  static const String defaultGatewayToken = 'YOUR_GATEWAY_TOKEN_HERE';
+  static const String defaultGatewayUrl = 'ws://192.168.159.1:18789';
+  static const String defaultGatewayToken = '189ahiadjasbcjkbakjbuwbkduwaudu';
 
   // 飞书 Agent 配置
   // 请从飞书开放平台获取实际值

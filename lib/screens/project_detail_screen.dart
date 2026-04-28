@@ -18,6 +18,21 @@ class ProjectDetailScreen extends StatefulWidget {
 
 class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   bool _isStartingWorkflow = false;
+  bool _isGeneratingFolder = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 页面加载时获取真实 Agent 状态
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _fetchAgentStatus();
+    });
+  }
+
+  Future<void> _fetchAgentStatus() async {
+    final provider = context.read<ProjectProvider>();
+    await provider.fetchAgentStatus();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -53,6 +68,9 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
           // 尝试从 provider 获取最新数据，如果 provider 中没有则使用传入的数据
           final latestProject = _getLatestProject(provider, currentProject);
 
+          // 使用从 OpenClaw Gateway 获取的真实 Agent 状态
+          final agentStatus = provider.agentOnlineStatus;
+
           return SingleChildScrollView(
             padding: const EdgeInsets.all(16),
             child: Column(
@@ -60,19 +78,13 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
               children: [
                 StatusPanel(
                   project: latestProject,
-                  agentOnlineStatus: const {
-                    'sakura': true,
-                    'conductor': true,
-                    'design': true,
-                    'code': false,
-                    'review': false,
-                  },
+                  agentOnlineStatus: agentStatus.isNotEmpty
+                      ? agentStatus
+                      : null, // 等待真实数据，避免显示假状态
                   onStartWorkflow: _isStartingWorkflow
                       ? null
                       : () => _handleStartWorkflow(context, provider, latestProject),
-                  onPauseWorkflow: () {
-                    // TODO: 实现暂停
-                  },
+                  onPauseWorkflow: () => _handleStopWorkflow(context, provider, latestProject),
                   onShowDetails: () {
                     _showProjectDetails(context, latestProject);
                   },
@@ -80,7 +92,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                 const SizedBox(height: 16),
                 _buildChatSection(context, provider, latestProject),
                 const SizedBox(height: 16),
-                _buildFilesSection(context, latestProject),
+                _buildFilesSection(context, provider, latestProject),
               ],
             ),
           );
@@ -109,6 +121,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   Future<void> _refreshProject(BuildContext context) async {
     final provider = context.read<ProjectProvider>();
     await provider.loadProjects();
+    await provider.fetchAgentStatus();
   }
 
   Future<void> _handleStartWorkflow(
@@ -118,10 +131,112 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   ) async {
     setState(() => _isStartingWorkflow = true);
     try {
-      await provider.startWorkflow(project.id);
+      final success = await provider.startWorkflow(project.id);
+      if (mounted) {
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('🚀 启动成功'),
+              backgroundColor: TechTheme.matrixGreen,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        } else {
+          // error 已经在 provider 中设置
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(provider.error ?? '启动失败'),
+              backgroundColor: TechTheme.warningRed,
+            ),
+          );
+          provider.clearError();
+        }
+      }
     } finally {
       if (mounted) {
         setState(() => _isStartingWorkflow = false);
+      }
+    }
+  }
+
+  Future<void> _handleStopWorkflow(
+    BuildContext context,
+    ProjectProvider provider,
+    Project project,
+  ) async {
+    try {
+      final success = await provider.stopWorkflow(project.id);
+      if (mounted) {
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('⏹ 已停止'),
+              backgroundColor: TechTheme.matrixGreen,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(provider.error ?? '停止失败'),
+              backgroundColor: TechTheme.warningRed,
+            ),
+          );
+          provider.clearError();
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('停止失败: $e'),
+            backgroundColor: TechTheme.warningRed,
+          ),
+        );
+      }
+    }
+  }
+
+  /// 处理生成文件夹
+  Future<void> _handleGenerateFolder(
+    BuildContext context,
+    ProjectProvider provider,
+    Project project,
+  ) async {
+    setState(() => _isGeneratingFolder = true);
+    try {
+      final folderPath = await provider.generateProjectFolder(project.id);
+      if (mounted) {
+        if (folderPath != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('📁 文件夹已生成: $folderPath'),
+              backgroundColor: TechTheme.matrixGreen,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(provider.error ?? '生成文件夹失败'),
+              backgroundColor: TechTheme.warningRed,
+            ),
+          );
+          provider.clearError();
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('生成文件夹失败: $e'),
+            backgroundColor: TechTheme.warningRed,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isGeneratingFolder = false);
       }
     }
   }
@@ -214,7 +329,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     );
   }
 
-  Widget _buildFilesSection(BuildContext context, Project project) {
+  Widget _buildFilesSection(BuildContext context, ProjectProvider provider, Project project) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -242,7 +357,19 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
             ],
           ),
           const SizedBox(height: 12),
-          _buildFileTree(),
+          _buildFileTree(provider, project),
+          const SizedBox(height: 16),
+          // 生成文件夹按钮
+          SizedBox(
+            width: double.infinity,
+            child: TechButton(
+              label: _isGeneratingFolder ? '生成中...' : '📁 生成文件夹',
+              style: TechButtonStyle.secondary,
+              onPressed: _isGeneratingFolder
+                  ? null
+                  : () => _handleGenerateFolder(context, provider, project),
+            ),
+          ),
         ],
       ),
     );
@@ -255,9 +382,9 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
         color: TechTheme.electricCyan.withOpacity(0.2),
         borderRadius: BorderRadius.circular(10),
       ),
-      child: const Text(
-        '3 个文件',
-        style: TextStyle(
+      child: Text(
+        '${project.progress}%',
+        style: const TextStyle(
           color: TechTheme.electricCyan,
           fontSize: 12,
         ),
@@ -265,15 +392,66 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     );
   }
 
-  Widget _buildFileTree() {
+  Widget _buildFileTree(ProjectProvider provider, Project project) {
+    // 根据项目当前阶段和进度显示文件
+    final files = _getProjectFiles(project);
+
+    if (files.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: TechTheme.deepSpaceBlue,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Center(
+          child: Text(
+            '暂无文件，请先生成文件夹',
+            style: TextStyle(
+              color: TechTheme.silverGray,
+              fontSize: 14,
+            ),
+          ),
+        ),
+      );
+    }
+
     return Column(
-      children: [
-        _buildFileItem('📄', 'design_spec.md', '100%', TechTheme.matrixGreen),
-        _buildFileItem('📄', 'main.dart', '60%', TechTheme.electricCyan),
-        _buildFileItem('📄', 'auth_service.dart', '100%', TechTheme.matrixGreen),
-        _buildFileItem('📄', 'token_handler.dart', '100%', TechTheme.matrixGreen),
-      ],
+      children: files.map((file) => _buildFileItem(
+        file['emoji']!,
+        file['name']!,
+        file['progress']!,
+        _getColorFromProgress(file['progress']!),
+      )).toList(),
     );
+  }
+
+  /// 根据项目阶段获取文件列表
+  List<Map<String, String>> _getProjectFiles(Project project) {
+    final files = <Map<String, String>>[];
+
+    // 设计阶段文件
+    if (project.currentStep.index >= WorkflowStep.design.index) {
+      files.add({'emoji': '📄', 'name': 'design_spec.md', 'progress': '100%'});
+    }
+
+    // 编码阶段文件
+    if (project.currentStep.index >= WorkflowStep.code.index) {
+      files.add({'emoji': '📄', 'name': 'main.dart', 'progress': '${project.progress}%'});
+    }
+
+    // 审核阶段文件
+    if (project.currentStep.index >= WorkflowStep.review.index) {
+      files.add({'emoji': '📄', 'name': 'review_report.md', 'progress': '100%'});
+    }
+
+    return files;
+  }
+
+  Color _getColorFromProgress(String progress) {
+    final value = int.tryParse(progress.replaceAll('%', '')) ?? 0;
+    if (value >= 100) return TechTheme.matrixGreen;
+    if (value >= 50) return TechTheme.electricCyan;
+    return TechTheme.energyYellow;
   }
 
   Widget _buildFileItem(String emoji, String name, String progress, Color color) {

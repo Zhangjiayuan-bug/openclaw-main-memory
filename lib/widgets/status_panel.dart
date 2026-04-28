@@ -145,18 +145,27 @@ class StatusPanel extends StatelessWidget {
   }
 
   Widget _buildAgentStatus() {
-    return Row(
-      children: [
-        _buildAgentItem('🌸', 'sakura', agentOnlineStatus?['sakura'] ?? false),
-        const SizedBox(width: 12),
-        _buildAgentItem('🎭', 'conductor', agentOnlineStatus?['conductor'] ?? false),
-        const SizedBox(width: 12),
-        _buildAgentItem('🎨', 'design', agentOnlineStatus?['design'] ?? false),
-        const SizedBox(width: 12),
-        _buildAgentItem('💻', 'code', agentOnlineStatus?['code'] ?? false),
-        const SizedBox(width: 12),
-        _buildAgentItem('🔍', 'review', agentOnlineStatus?['review'] ?? false),
-      ],
+    // Agent 名称和图标映射（可以从 provider 动态获取，这里列出所有可能的 agent）
+    final agentMappings = [
+      {'key': 'sakura', 'emoji': '🌸', 'label': 'sakura'},
+      {'key': 'conductor', 'emoji': '🎭', 'label': 'conductor'},
+      {'key': 'design', 'emoji': '🎨', 'label': 'design'},
+      {'key': 'code', 'emoji': '💻', 'label': 'code'},
+      {'key': 'review', 'emoji': '🔍', 'label': 'review'},
+    ];
+
+    return Wrap(
+      spacing: 12,
+      runSpacing: 8,
+      children: agentMappings.map((agent) {
+        // 从 agentOnlineStatus 中获取状态，如果不存在则默认离线
+        final isOnline = agentOnlineStatus?[agent['key'] as String] ?? false;
+        return _buildAgentItem(
+          agent['emoji'] as String,
+          agent['label'] as String,
+          isOnline,
+        );
+      }).toList(),
     );
   }
 
@@ -294,9 +303,14 @@ class StatusPanel extends StatelessWidget {
   }
 
   Widget _buildCurrentFile() {
-    if (project!.status == ProjectStatus.completed) {
+    if (project!.status == ProjectStatus.completed || project!.status == ProjectStatus.pending) {
       return const SizedBox.shrink();
     }
+
+    // 根据当前阶段显示当前正在处理的文件名
+    // 文件名应该从项目数据中获取，这里使用 project 的 context 或其他字段
+    // 如果没有，则显示默认文件名
+    String currentFileName = project!.currentStepFileName;
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -314,7 +328,7 @@ class StatusPanel extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              _getCurrentFileName(),
+              currentFileName,
               style: const TextStyle(
                 color: TechTheme.silverGray,
                 fontSize: 14,
@@ -332,17 +346,6 @@ class StatusPanel extends StatelessWidget {
         ],
       ),
     );
-  }
-
-  String _getCurrentFileName() {
-    switch (project!.currentStep) {
-      case WorkflowStep.design:
-        return 'design_spec.md';
-      case WorkflowStep.code:
-        return 'main.dart';
-      case WorkflowStep.review:
-        return 'review_report.md';
-    }
   }
 
   Widget _buildActionButtons() {

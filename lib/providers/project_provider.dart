@@ -18,14 +18,24 @@ class ProjectProvider extends ChangeNotifier {
   bool _isLoading = false;
   String? _error;
 
+  // Agent 在线状态（从 OpenClaw Gateway 真实获取）
+  Map<String, bool> _agentOnlineStatus = {};
+
   // Workflow 操作进行中标志
   final Set<String> _workflowOperationsInProgress = {};
+
+  // 文件夹生成结果
+  String? _lastGeneratedFolderPath;
+  bool? _lastFolderGenerationSuccess;
 
   // Getters
   List<Project> get projects => _projects;
   Project? get currentProject => _currentProject;
   bool get isLoading => _isLoading;
   String? get error => _error;
+  Map<String, bool> get agentOnlineStatus => _agentOnlineStatus;
+  String? get lastGeneratedFolderPath => _lastGeneratedFolderPath;
+  bool? get lastFolderGenerationSuccess => _lastFolderGenerationSuccess;
 
   /// 检查指定项目的 workflow 操作是否正在进行
   bool isWorkflowOperationInProgress(String projectId) =>
@@ -38,6 +48,38 @@ class ProjectProvider extends ChangeNotifier {
   Future<void> init() async {
     await _storage.init();
     await loadProjects();
+  }
+
+  /// 从 OpenClaw Gateway 获取 Agent 状态
+  Future<void> fetchAgentStatus() async {
+    if (!_openclaw.isConnected) {
+      return;
+    }
+
+    try {
+      final agents = await _openclaw.getAgents();
+      if (agents != null) {
+        final newStatus = <String, bool>{};
+        for (final agent in agents) {
+          final id = agent['id']?.toString() ?? agent['name']?.toString();
+          if (id != null) {
+            // Agent 状态可能在 'status' 或 'online' 或 'isOnline' 字段
+            final status = agent['status'] ?? agent['online'] ?? agent['isOnline'];
+            bool isOnline = false;
+            if (status is bool) {
+              isOnline = status;
+            } else if (status is String) {
+              isOnline = status.toLowerCase() == 'online' || status.toLowerCase() == 'true';
+            }
+            newStatus[id] = isOnline;
+          }
+        }
+        _agentOnlineStatus = newStatus;
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('[ProjectProvider] fetchAgentStatus failed: $e');
+    }
   }
 
   /// 加载所有项目
@@ -190,12 +232,16 @@ class ProjectProvider extends ChangeNotifier {
   }
 
   /// 启动工作流
-  Future<void> startWorkflow(String projectId) async {
+  /// 返回 true 表示启动成功，false 表示失败
+  Future<bool> startWorkflow(String projectId) async {
     if (_workflowOperationsInProgress.contains(projectId)) {
-      return;
+      _error = '工作流操作正在进行中';
+      notifyListeners();
+      return false;
     }
 
     _workflowOperationsInProgress.add(projectId);
+    _error = null;
     notifyListeners();
 
     try {
@@ -209,7 +255,7 @@ class ProjectProvider extends ChangeNotifier {
       // 发送设计任务给 code-designer
       // 通过 OpenClaw 网关发送任务
       if (_openclaw.isConnected) {
-        await _openclaw.sendTaskToAgent(
+        final sent = await _openclaw.sendTaskToAgent(
           agentId: 'code-designer',
           task: 'start_design',
           context: {
@@ -218,7 +264,60 @@ class ProjectProvider extends ChangeNotifier {
             'requirements': project.description ?? '',
           },
         );
+        if (!sent) {
+          _error = '发送任务失败：网关未连接';
+          return false;
+        }
+      } else {
+        _error = '启动失败：OpenClaw 网关未连接';
+        return false;
       }
+
+      return true;
+    } catch (e) {
+      _error = '启动失败: $e';
+      return false;
+    } finally {
+      _workflowOperationsInProgress.remove(projectId);
+      notifyListeners();
+    }
+  }
+
+  /// 停止工作流
+  /// 返回 true 表示停止成功，false 表示失败
+  Future<bool> stopWorkflow(String projectId) async {
+    if (_workflowOperationsInProgress.contains(projectId)) {
+      _error = '工作流操作正在进行中';
+      notifyListeners();
+      return false;
+    }
+
+    _workflowOperationsInProgress.add(projectId);
+    _error = null;
+    notifyListeners();
+
+    try {
+      final project = _projects.firstWhere((p) => p.id == projectId);
+      await updateProject(project.copyWith(
+        status: ProjectStatus.pending,
+        progress: 0,
+      ));
+
+      // 通知 conductor 停止任务
+      if (_openclaw.isConnected) {
+        await _openclaw.sendTaskToAgent(
+          agentId: 'conductor',
+          task: 'stop_workflow',
+          context: {
+            'projectId': project.id,
+          },
+        );
+      }
+
+      return true;
+    } catch (e) {
+      _error = '停止失败: $e';
+      return false;
     } finally {
       _workflowOperationsInProgress.remove(projectId);
       notifyListeners();
@@ -339,6 +438,10 @@ class ProjectProvider extends ChangeNotifier {
   /// 连接到 OpenClaw 网关
   Future<bool> connectToOpenClaw([String? url, String? token]) async {
     final result = await _openclaw.connect(url, token);
+    if (result) {
+      // 连接成功后获取 agent 状态
+      await fetchAgentStatus();
+    }
     notifyListeners();
     return result;
   }
@@ -346,13 +449,67 @@ class ProjectProvider extends ChangeNotifier {
   /// 断开 OpenClaw 连接
   void disconnectFromOpenClaw() {
     _openclaw.disconnect();
+    _agentOnlineStatus = {};
     notifyListeners();
   }
 
   /// 配置飞书
-  void configureFeishu({required String appId, required String appSecret}) {
+  /// 返回验证结果：null 表示验证通过，String 表示错误信息
+  Future<String?> configureFeishu({required String appId, required String appSecret}) async {
+    // 先配置
     _feishu.configure(appId: appId, appSecret: appSecret);
+
+    // 验证：尝试获取 token
+    final token = await _feishu.getTenantAccessToken();
+    if (token == null) {
+      // 验证失败，清除配置
+      _feishu.configure(appId: '', appSecret: '');
+      notifyListeners();
+      return '飞书配置验证失败：请检查 App ID 和 App Secret 是否正确';
+    }
+
     notifyListeners();
+    return null;
+  }
+
+  /// 验证飞书配置（不保存）
+  /// 返回 null 表示验证通过，String 表示错误信息
+  Future<String?> validateFeishu({required String appId, required String appSecret}) async {
+    // 临时配置
+    final tempService = FeishuService();
+    tempService.configure(appId: appId, appSecret: appSecret);
+
+    // 验证：尝试获取 token
+    final token = await tempService.getTenantAccessToken();
+    if (token == null) {
+      return '验证失败：请检查 App ID 和 App Secret 是否正确';
+    }
+
+    return null;
+  }
+
+  /// 生成项目文件夹
+  /// 返回生成的文件夹路径，失败返回 null
+  Future<String?> generateProjectFolder(String projectId) async {
+    try {
+      final folderPath = await _storage.generateProjectFolder(projectId);
+
+      _lastGeneratedFolderPath = folderPath;
+      _lastFolderGenerationSuccess = true;
+      notifyListeners();
+      return folderPath;
+    } catch (e) {
+      _lastGeneratedFolderPath = null;
+      _lastFolderGenerationSuccess = false;
+      _error = '生成文件夹失败: $e';
+      notifyListeners();
+      return null;
+    }
+  }
+
+  /// 获取项目文件夹路径
+  Future<String?> getProjectFolderPath(String projectId) async {
+    return await _storage.getProjectFolderPath(projectId);
   }
 
   /// 清除错误
