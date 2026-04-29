@@ -145,25 +145,48 @@ class StatusPanel extends StatelessWidget {
   }
 
   Widget _buildAgentStatus() {
-    // Agent 名称和图标映射（可以从 provider 动态获取，这里列出所有可能的 agent）
-    final agentMappings = [
+    // 默认 Agent emoji 映射（fallback）
+    final agentEmojiMap = {
+      'sakura': '🌸',
+      'conductor': '🎭',
+      'design': '🎨',
+      'code': '💻',
+      'review': '🔍',
+      'code-designer': '🎨',
+      'code-writer': '💻',
+      'code-reviewer': '🔍',
+    };
+
+    // 优先从 agentOnlineStatus 动态构建（真实数据）
+    if (agentOnlineStatus != null && agentOnlineStatus!.isNotEmpty) {
+      return Wrap(
+        spacing: 12,
+        runSpacing: 8,
+        children: agentOnlineStatus!.entries.map((entry) {
+          final key = entry.key;
+          final isOnline = entry.value;
+          final emoji = agentEmojiMap[key] ?? '🤖';
+          return _buildAgentItem(emoji, key, isOnline);
+        }).toList(),
+      );
+    }
+
+    // Fallback: 显示默认 agent（全部离线）
+    final defaultAgents = [
       {'key': 'sakura', 'emoji': '🌸', 'label': 'sakura'},
       {'key': 'conductor', 'emoji': '🎭', 'label': 'conductor'},
       {'key': 'design', 'emoji': '🎨', 'label': 'design'},
       {'key': 'code', 'emoji': '💻', 'label': 'code'},
       {'key': 'review', 'emoji': '🔍', 'label': 'review'},
     ];
-
     return Wrap(
       spacing: 12,
       runSpacing: 8,
-      children: agentMappings.map((agent) {
-        // 从 agentOnlineStatus 中获取状态，如果不存在则默认离线
-        final isOnline = agentOnlineStatus?[agent['key'] as String] ?? false;
+      children: defaultAgents.map((agent) {
         return _buildAgentItem(
           agent['emoji'] as String,
           agent['label'] as String,
-          isOnline,
+          false,
         );
       }).toList(),
     );

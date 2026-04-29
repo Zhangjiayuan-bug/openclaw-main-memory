@@ -84,6 +84,16 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     }
   }
 
+  /// 递归统计所有文件数量
+  int _countAllFiles(List<FileNode> nodes) {
+    int count = 0;
+    for (final node in nodes) {
+      if (!node.isDirectory) count++;
+      count += _countAllFiles(node.children);
+    }
+    return count;
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentProject = widget.project;
@@ -455,6 +465,8 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   }
 
   Widget _buildFilesSection(BuildContext context, ProjectProvider provider, Project project) {
+    final fileCount = _countAllFiles(_fileNodes);
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -487,7 +499,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                   onPressed: _loadProjectFiles,
                 ),
               const SizedBox(width: 4),
-              _buildFileCountBadge(project),
+              _buildFileCountBadge(fileCount),
             ],
           ),
           const SizedBox(height: 12),
@@ -508,7 +520,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     );
   }
 
-  Widget _buildFileCountBadge(Project project) {
+  Widget _buildFileCountBadge(int fileCount) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
@@ -516,7 +528,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
         borderRadius: BorderRadius.circular(10),
       ),
       child: Text(
-        '${project.progress}%',
+        '$fileCount',
         style: const TextStyle(color: TechTheme.electricCyan, fontSize: 12),
       ),
     );
